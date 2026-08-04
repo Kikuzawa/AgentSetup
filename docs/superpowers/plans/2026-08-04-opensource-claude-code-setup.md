@@ -325,6 +325,8 @@ if (-not (Test-Path (Join-Path $src "comfy_mcp_venv\Scripts\python.exe"))) {
     uv venv (Join-Path $src "comfy_mcp_venv")
 }
 Write-Host "[pip] deps..."
+# mcp>=2.0 удалил mcp.server.fastmcp (крашит server.py на импорте) - фиксируем <2.0
+uv pip install --python (Join-Path $src "comfy_mcp_venv\Scripts\python.exe") "mcp<2.0"
 uv pip install --python (Join-Path $src "comfy_mcp_venv\Scripts\python.exe") -r (Join-Path $src "requirements.txt")
 Write-Host "[ok] мост в $src"
 ```
