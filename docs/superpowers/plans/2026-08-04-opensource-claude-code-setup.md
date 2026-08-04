@@ -623,8 +623,8 @@ $wf = @{
 }
 $body = @{ prompt = $wf; client_id = "opencode-e2e" } | ConvertTo-Json -Depth 10
 $resp = Invoke-RestMethod -Uri "http://127.0.0.1:8188/prompt" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 15
-$pid = $resp.prompt_id
-Write-Host "[2] prompt_id: $pid"
+$promptId = $resp.prompt_id
+Write-Host "[2] prompt_id: $promptId"
 Start-Sleep -Seconds 25
 # 3) Скачивание результата
 $img = Invoke-WebRequest -Uri "http://127.0.0.1:8188/view?filename=opencode_e2e_00001_.png&subfolder=&type=output" -UseBasicParsing -TimeoutSec 20 -OutFile "$out\test_output.png"
