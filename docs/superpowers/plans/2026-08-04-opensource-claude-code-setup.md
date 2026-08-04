@@ -129,7 +129,11 @@ $releaseUrl = "https://github.com/Comfy-Org/ComfyUI/releases/download/$Version/C
 $dl = Join-Path $env:TEMP "ComfyUI_portable.7z"
 $sevenZip = Join-Path $env:TEMP "7zr.exe"
 
-if (Test-Path (Join-Path $ComfyRoot "ComfyUI")) {
+# Флаги-артефакты установки: main.py и чекпоинт должны существовать.
+$mainPy = Join-Path $ComfyRoot "ComfyUI\main.py"
+$ckpt = Join-Path $ComfyRoot "ComfyUI\models\checkpoints\v1-5-pruned-emaonly.safetensors"
+
+if ((Test-Path $mainPy) -and (Test-Path $ckpt) -and ((Get-Item $ckpt).Length -gt 100MB)) {
     Write-Host "[skip] ComfyUI уже установлен в $ComfyRoot"
     exit 0
 }
@@ -137,23 +141,33 @@ if (Test-Path (Join-Path $ComfyRoot "ComfyUI")) {
 # 7-Zip standalone (используется для .7z распаковки)
 if (-not (Test-Path $sevenZip)) {
     Write-Host "[fetch] 7zr.exe..."
-    Invoke-WebRequest -Uri "https://www.7-zip.org/a/7zr.exe" -OutFile $sevenZip
+    & curl.exe -L --retry 3 -o $sevenZip "https://www.7-zip.org/a/7zr.exe"
 }
-if (-not (Test-Path $dl)) {
-    Write-Host "[fetch] ComfyUI $Version (2.1 ГБ)..."
-    Invoke-WebRequest -Uri $releaseUrl -OutFile $dl
+if (-not (Test-Path $mainPy)) {
+    if (-not (Test-Path $dl) -or ((Get-Item $dl).Length -lt 100MB)) {
+        Write-Host "[fetch] ComfyUI $Version (2.1 ГБ, с докачкой)..."
+        & curl.exe -L -C - --retry 3 --retry-delay 5 -o $dl $releaseUrl
+    }
+    Write-Host "[extract]..."
+    New-Item -ItemType Directory -Force -Path $ComfyRoot | Out-Null
+    Push-Location $ComfyRoot
+    & $sevenZip x $dl -y | Out-Null
+    # Portable-архив распаковывается в обёртку ComfyUI_windows_portable\ —
+    # поднимаем содержимое на уровень $ComfyRoot (плоская структура из плана).
+    $wrapper = Join-Path $ComfyRoot "ComfyUI_windows_portable"
+    if ((Test-Path $wrapper) -and -not (Test-Path $mainPy)) {
+        Write-Host "[flatten] $wrapper -> $ComfyRoot"
+        Get-ChildItem $wrapper | Move-Item -Destination $ComfyRoot -Force
+        Remove-Item $wrapper -Recurse -Force
+    }
+    Pop-Location
 }
-Write-Host "[extract]..."
-New-Item -ItemType Directory -Force -Path $ComfyRoot | Out-Null
-Push-Location $ComfyRoot
-& $sevenZip x $dl -y | Out-Null
-Pop-Location
 
-$checkpointDir = Join-Path $ComfyRoot "ComfyUI\models\checkpoints"
-$ckpt = Join-Path $checkpointDir "v1-5-pruned-emaonly.safetensors"
-if (-not (Test-Path $ckpt)) {
-    Write-Host "[fetch] SD 1.5 fp16 (4.3 ГБ)..."
-    Invoke-WebRequest -Uri "https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors" -OutFile $ckpt
+# Чекпоинт качается независимо от skip-guard (докачка после частичной неудачи).
+if (-not (Test-Path $ckpt) -or ((Get-Item $ckpt).Length -lt 100MB)) {
+    Write-Host "[fetch] SD 1.5 fp16 (4.3 ГБ, с докачкой)..."
+    New-Item -ItemType Directory -Force -Path (Split-Path $ckpt) | Out-Null
+    & curl.exe -L -C - --retry 3 --retry-delay 5 -o $ckpt "https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors"
 }
 Write-Host "[ok] ComfyUI в $ComfyRoot"
 ```
@@ -306,7 +320,13 @@ if (-not (Test-Path (Join-Path $src "server.py"))) {
     Write-Host "[clone] joenorton/comfyui-mcp-server"
     git clone --depth 1 https://github.com/joenorton/comfyui-mcp-server.git $src
 }
+if (-not (Test-Path (Join-Path $src "comfy_mcp_venv\Scripts\python.exe"))) {
+    Write-Host "[venv] comfy_mcp_venv"
+    uv venv (Join-Path $src "comfy_mcp_venv")
+}
 Write-Host "[pip] deps..."
+# mcp>=2.0 удалил mcp.server.fastmcp (крашит server.py на импорте) - фиксируем <2.0
+uv pip install --python (Join-Path $src "comfy_mcp_venv\Scripts\python.exe") "mcp<2.0"
 uv pip install --python (Join-Path $src "comfy_mcp_venv\Scripts\python.exe") -r (Join-Path $src "requirements.txt")
 Write-Host "[ok] мост в $src"
 ```
@@ -544,7 +564,7 @@ function Test-Step($Name, [scriptblock]$Check) {
     catch { Write-Host "[FAIL] $Name — $($_.Exception.Message)"; $script:ok = $false }
 }
 Test-Step "ComfyUI :8188" { (Invoke-WebRequest "http://127.0.0.1:8188/system_stats" -UseBasicParsing -TimeoutSec 5).StatusCode -eq 200 }
-Test-Step "comfy-mcp :9000" { (Invoke-WebRequest "http://127.0.0.1:9000/mcp" -UseBasicParsing -TimeoutSec 5).StatusCode -eq 200 }
+Test-Step "comfy-mcp :9000" { (curl.exe -s -o NUL -w "%{http_code}" --max-time 5 -H "Accept: text/event-stream" "http://127.0.0.1:9000/mcp") -eq "200" }
 Test-Step "Pillow venv" { Test-Path "C:\Users\Kikuzen\.local\share\opencode\venvs\image-tools\Scripts\python.exe" }
 Test-Step "Memory MCP в конфиге" { (Get-Content "C:\Users\Kikuzen\.config\opencode\opencode.jsonc" -Raw) -match '"memory"' }
 Test-Step "Скиллы" { (Test-Path "C:\Users\Kikuzen\.config\opencode\skills\image-edit\SKILL.md") -and (Test-Path "C:\Users\Kikuzen\.config\opencode\skills\comfy-curl\SKILL.md") -and (Test-Path "C:\Users\Kikuzen\.config\opencode\skills\vision-screenshot\SKILL.md") }
@@ -603,8 +623,8 @@ $wf = @{
 }
 $body = @{ prompt = $wf; client_id = "opencode-e2e" } | ConvertTo-Json -Depth 10
 $resp = Invoke-RestMethod -Uri "http://127.0.0.1:8188/prompt" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 15
-$pid = $resp.prompt_id
-Write-Host "[2] prompt_id: $pid"
+$promptId = $resp.prompt_id
+Write-Host "[2] prompt_id: $promptId"
 Start-Sleep -Seconds 25
 # 3) Скачивание результата
 $img = Invoke-WebRequest -Uri "http://127.0.0.1:8188/view?filename=opencode_e2e_00001_.png&subfolder=&type=output" -UseBasicParsing -TimeoutSec 20 -OutFile "$out\test_output.png"
